@@ -1,5 +1,5 @@
 /* 
- * A BYACCJ specification for the Cminus language.
+ * A BYACCJ `pecification for the Cminus language.
  * Author: Vijay Gehlot
  */
 %{
@@ -19,7 +19,6 @@ import java.util.*;
 %%
 
 program:		{ 
-    
                     symtab.enterScope();    // enter scope in symbol table
 					// TODO generate code prologue
                 } 
@@ -54,13 +53,28 @@ var_declaration:      type_specifier ID SEMI
                                 semerror("declaration of VOID variable " + name + " ");
                             // otherwise, put it in the symbol table
                             } else {
-                                
+                                SymTabRec rec = new VarRec(name, symtab.getScope(), rettype);
+                                symtab.insert(name,rec);
                             }
                         }
-                    | type_specifier assign_stmt    // allows declaration and assignment concurrently
+                    //| type_specifier assign_stmt    // allows declaration and assignment concurrently
                     | type_specifier ID LBRACKET NUM RBRACKET SEMI
                         {
+                            int rettype = $1.ival;
+                            String name = $2.sval;
+                            int arraysize = $4.ival;
                             
+                            // check if it's already in there (double declaration, semantic error)
+                            if(symtab.lookup(name)) {
+                                semerror("re-declaration of " + name + " in current scope ");
+                                // check for void type (semantic error)
+                            } else if(rettype == VOID){
+                                semerror("declaration of VOID variable " + name + " ");
+                                // otherwise, put it in the symbol table
+                            } else {
+                                SymTabRec rec = new ArrRec(name, symtab.getScope(), rettype, arraysize);
+                                symtab.insert(name,rec);
+                            }
                         }
 ;
 
@@ -73,23 +87,110 @@ type_specifier:		  INT   { $$ = $1; }
                     | VOID  { $$ = $1; }
 ;
 
-fun_declaration:      type_specifier ID LPAREN params RPAREN compound_stmt { if($2.sval.equals("main")) seenMain = true; }
+fun_declaration:      type_specifier ID
+                        {
+                            int rettype = $1.ival;
+                            String name = $2.sval;
+                            
+                            // create FunRec for use in symbol table
+                            FunRec rec = new FunRec(name, symtab.getScope(), rettype, null/*TODO get params*/);
+
+                            // return FunRec to the rest of the grammar rule below
+                            $$ = new ParserVal(rec);
+                            
+                            // check for function in symtab
+                            if(symtab.lookup(name)) {
+                                semerror("re-declaration of function " + name + " in current scope");
+                            // main must be last fun_declaration
+                            } else if(seenMain) {
+                                semerror("function " + name + " declared after main");
+                            // otherwise, add to symtab
+                            } else {
+                                symtab.insert(name,rec);
+                                if(name.equals("main")) {
+                                    seenMain = true;
+                                }
+                            }
+                            symtab.enterScope();
+                        }
+                      LPAREN params RPAREN
+                        {
+                            FunRec rec = (FunRec)$3.obj;
+                            List<SymTabRec> params = (List<SymTabRec>)$5.obj;
+                            rec.setParams(params);
+                        }
+                      compound_stmt
+                        {
+                            firstTime = true;   // entered scope
+                        }
 ;
 
 params:			      param_list    { $$ = $1; }
-                    | VOID          { $$ = $1; }
+                    | VOID
                     | /* empty */
 ;
 
 param_list:	          param_list COMMA param
+                        {
+                            List<SymTabRec> reclist =(List<SymTabRec>)$1.obj;
+                            SymTabRec rec = (SymTabRec)$3.obj;
+                            reclist.add(rec);
+                            $$ = new ParserVal(reclist);
+                        }
                     | param
+                        {
+                            List<SymTabRec> reclist = new ArrayList<SymTabRec>();
+                            SymTabRec rec = (SymTabRec)$1.obj;
+                            reclist.add(rec);
+                            $$ = new ParserVal(reclist);
+                        }
 ;
 
 param:	              type_specifier ID
+                        {
+                            int vartype = $1.ival;
+                            String name = $2.sval;
+                            
+                            VarRec rec = new VarRec(name, symtab.getScope(), vartype);
+                            $$ = new ParserVal(rec);
+                            
+                            // check symtab for dupe
+                            if(symtab.lookup(name)) {
+                                semerror("re-declaration of variable " + name + " in current scope");
+                            } else {
+                                symtab.insert(name,rec);
+                            }
+                        }
                     | type_specifier ID LBRACKET RBRACKET
+                        {
+                            int vartype = $1.ival;
+                            String name = $2.sval;
+                            
+                            ArrRec rec = new ArrRec(name, symtab.getScope(), vartype, -1);
+                            $$ = new ParserVal(rec);
+                            
+                            // check symtab for dupe
+                            if(symtab.lookup(name)) {
+                                semerror("re-declaration of variable " + name + " in current scope");
+                            } else {
+                                symtab.insert(name,rec);
+                            }
+                        }
 ;
 
-compound_stmt:	      LBRACE local_declarations statement_list RBRACE
+compound_stmt:	      LBRACE
+                        {
+                            // special case (function braces)
+                            if(firstTime) {
+                                firstTime = false;
+                            } else {
+                                symtab.enterScope();
+                            }
+                        }
+                      local_declarations statement_list RBRACE
+                        {
+                            symtab.exitScope();
+                        }
 ;
 
 local_declarations:	  local_declarations var_declaration
@@ -115,7 +216,19 @@ call_stmt:            call SEMI
 ;
 
 assign_stmt:          ID ASSIGN expression SEMI
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of variable " + name);
+                            }
+                        }
                     | ID LBRACKET expression RBRACKET ASSIGN expression SEMI
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of variable " + name);
+                            }
+                        }
 ;
 
 selection_stmt:	      IF LPAREN expression RPAREN statement ELSE statement
@@ -128,7 +241,12 @@ print_stmt:           PRINT LPAREN expression RPAREN SEMI
 ;
 
 input_stmt:	          ID ASSIGN INPUT LPAREN RPAREN SEMI
-
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of variable " + name);
+                            }
+                        }
 ;
 
 return_stmt:	      RETURN SEMI
@@ -165,12 +283,30 @@ mulop:	              MULT
 
 factor:	              LPAREN expression RPAREN
                     | ID
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of variable " + name);
+                            }
+                        }
                     | ID LBRACKET expression RBRACKET
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of variable " + name);
+                            }
+                        }
                     | call
                     | NUM
 ;
 
 call:	              ID LPAREN args RPAREN
+                        {
+                            String name = $1.sval;
+                            if(symtab.get(name) == null) {
+                                semerror("missing declaration of function " + name + " in current scope");
+                            }
+                        }
 ;
 
 args:	              arg_list
@@ -244,4 +380,3 @@ public static void main (String [] args) throws IOException
 }
 
 */
-
